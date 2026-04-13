@@ -330,17 +330,76 @@ def check_cc(cc: str, mm: str, yy: str, cvv: str, proxy: dict | None = None) -> 
 
         if "error" in resp_json:
             err = resp_json["error"]
-            if "decline_code" in err:
-                msg = err["decline_code"].replace("_", " ").title()
-                # Insufficient funds = CC valid tapi saldo kurang
-                if err["decline_code"] == "insufficient_funds":
-                    return "LIVE", f"CCN ✅ ({msg})"
+            decline_code = err.get("decline_code", "")
+            err_code = err.get("code", "")
+            msg_raw = decline_code or err_code or err.get("message", "Unknown error")
+            msg = msg_raw.replace("_", " ").title()
+
+            # Decline codes yang artinya kartu VALID (bank terima request tapi tolak)
+            live_decline_codes = {
+                "insufficient_funds",       # Saldo kurang
+                "do_not_honor",             # Bank nolak tapi kartu valid
+                "transaction_not_allowed",  # Transaksi tidak diizinkan
+                "try_again_later",          # Coba lagi nanti
+                "withdrawal_count_limit_exceeded",  # Limit tercapai
+                "card_velocity_exceeded",   # Terlalu banyak transaksi
+                "security_violation",       # Perlu verifikasi
+                "not_permitted",            # Tidak diizinkan tapi kartu ada
+                "service_not_allowed",      # Service tidak diizinkan
+                "revocation_of_all_authorizations",  # Revoked
+                "reenter_transaction",      # Coba ulang
+                "issuer_not_available",     # Issuer offline
+                "approve_with_id",          # Perlu verifikasi ID
+                "call_issuer",              # Hubungi bank
+                "restricted_card",          # Kartu restricted tapi valid
+            }
+
+            # Decline codes yang artinya kartu DEAD
+            dead_decline_codes = {
+                "stolen_card",              # Kartu dicuri
+                "lost_card",                # Kartu hilang
+                "pickup_card",              # Kartu disita
+                "fraudulent",               # Fraud
+                "generic_decline",          # Decline umum
+                "invalid_account",          # Akun invalid
+                "new_account_information_available",  # Data baru
+                "no_action_taken",          # Tidak ada aksi
+                "currency_not_supported",   # Currency tidak didukung
+                "testmode_decline",         # Test mode
+            }
+
+            if decline_code in live_decline_codes:
+                return "LIVE", f"CCN ✅ ({msg})"
+            elif decline_code in dead_decline_codes:
+                return "DEAD", msg
+            elif err_code == "incorrect_cvc":
+                return "LIVE", "CCN ✅ (Incorrect CVC)"
+            elif err_code == "expired_card":
+                return "DEAD", "Expired Card"
+            elif err_code == "invalid_expiry_year" or err_code == "invalid_expiry_month":
+                return "DEAD", "Invalid Expiry"
+            elif err_code == "incorrect_number" or err_code == "invalid_number":
+                return "DEAD", "Invalid Card Number"
+            elif err_code == "processing_error":
+                return "DEAD", "Processing Error"
+            elif decline_code:
+                # Unknown decline code — default ke DEAD
                 return "DEAD", msg
             else:
-                msg = err.get("message", "Unknown error")
-                return "DEAD", msg
+                return "DEAD", err.get("message", "Unknown error")
         else:
-            return "LIVE", f"Charged ${CHARGE_AMOUNT} ✅"
+            # Check payment intent status
+            pi_status = resp_json.get("status", "")
+            if pi_status == "succeeded":
+                return "LIVE", f"Charged ${CHARGE_AMOUNT} ✅"
+            elif pi_status == "requires_action":
+                return "LIVE", "3DS Auth Required ✅ (CCN Valid)"
+            elif pi_status == "requires_capture":
+                return "LIVE", f"Authorized ${CHARGE_AMOUNT} ✅"
+            elif pi_status == "processing":
+                return "LIVE", f"Processing ${CHARGE_AMOUNT} ⏳"
+            else:
+                return "LIVE", f"Charged ${CHARGE_AMOUNT} ✅ ({pi_status})"
 
     except Exception as e:
         return "ERROR", str(e)[:100]
