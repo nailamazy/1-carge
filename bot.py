@@ -162,6 +162,75 @@ def is_authorized(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+# ============== BIN LOOKUP ==============
+_bin_cache: dict[str, dict] = {}
+
+def lookup_bin(cc_number: str) -> dict:
+    """Lookup BIN info (bank, brand, type, country) from first 6-8 digits."""
+    bin_num = cc_number[:6]
+    if bin_num in _bin_cache:
+        return _bin_cache[bin_num]
+
+    info = {"bank": "Unknown", "brand": "Unknown", "type": "Unknown", "country": "Unknown", "emoji": "🏳️"}
+
+    # Try multiple BIN APIs
+    apis = [
+        f"https://bins.antipublic.cc/bins/{bin_num}",
+        f"https://lookup.binlist.net/{bin_num}",
+    ]
+
+    for api_url in apis:
+        try:
+            r = requests.get(api_url, timeout=5, headers={"Accept-Version": "3", "User-Agent": "Mozilla/5.0"})
+            if r.status_code != 200:
+                continue
+            data = r.json()
+
+            if "bank" in data and isinstance(data["bank"], str):
+                # antipublic format
+                info["bank"] = data.get("bank", "Unknown") or "Unknown"
+                info["brand"] = data.get("brand", "Unknown") or "Unknown"
+                info["type"] = (data.get("type", "Unknown") or "Unknown").title()
+                info["country"] = data.get("country_name", "Unknown") or "Unknown"
+                country_code = data.get("country", "")
+                info["country_flag"] = data.get("country_flag", "") or ""
+                if country_code and not info["country_flag"]:
+                    info["country_flag"] = country_code
+            elif "bank" in data and isinstance(data["bank"], dict):
+                # binlist.net format
+                info["bank"] = data.get("bank", {}).get("name", "Unknown") or "Unknown"
+                info["brand"] = data.get("scheme", "Unknown") or "Unknown"
+                info["type"] = (data.get("type", "Unknown") or "Unknown").title()
+                country_data = data.get("country", {})
+                info["country"] = country_data.get("name", "Unknown") or "Unknown"
+                info["country_flag"] = country_data.get("emoji", "") or ""
+
+            info["brand"] = info["brand"].upper()
+            _bin_cache[bin_num] = info
+            break
+        except Exception:
+            continue
+
+    _bin_cache[bin_num] = info
+    return info
+
+
+def format_bin_info(bin_info: dict) -> str:
+    """Format BIN info as readable string: BANK - COUNTRY - BRAND Type"""
+    flag = bin_info.get("country_flag", "")
+    parts = []
+    if bin_info["bank"] != "Unknown":
+        parts.append(bin_info["bank"])
+    if bin_info["country"] != "Unknown":
+        parts.append(bin_info["country"])
+    brand_type = f"{bin_info['brand']} {bin_info['type']}"
+    parts.append(brand_type)
+    result = " - ".join(parts)
+    if flag:
+        result = f"{flag} {result}"
+    return result
+
+
 def check_cc(cc: str, mm: str, yy: str, cvv: str, proxy: dict | None = None) -> tuple[str, str]:
     """Check satu CC via Stripe gateway. Returns (status, message)."""
     s = requests.Session()
@@ -551,20 +620,22 @@ async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
     )
 
+    bin_info = await asyncio.to_thread(lookup_bin, cc)
+    bin_display = format_bin_info(bin_info)
     status, result = await asyncio.to_thread(check_cc, cc, mm, yy, cvv, proxy)
 
     if status == "LIVE":
         emoji = "✅"
         header = "APPROVED"
-        logger.info(f"✅ LIVE | {fullcc} | {result}")
+        logger.info(f"✅ LIVE | {fullcc} | {result} | {bin_display}")
     elif status == "DEAD":
         emoji = "❌"
         header = "DECLINED"
-        logger.info(f"❌ DEAD | {fullcc} | {result}")
+        logger.info(f"❌ DEAD | {fullcc} | {result} | {bin_display}")
     else:
         emoji = "⚠️"
         header = "ERROR"
-        logger.warning(f"⚠️ ERROR | {fullcc} | {result}")
+        logger.warning(f"⚠️ ERROR | {fullcc} | {result} | {bin_display}")
 
     text = (
         f"{emoji} <b>{header}</b>\n\n"
@@ -572,7 +643,8 @@ async def cmd_chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"├ Status: <b>{status}</b>\n"
         f"├ Response: <code>{result}</code>\n"
         f"├ Gate: <code>Stripe [peerchange.org]</code>\n"
-        f"└ Amount: <code>$1 USD</code>"
+        f"├ Amount: <code>$1 USD</code>\n"
+        f"└ BIN: <code>{bin_display}</code>"
     )
 
     await msg.edit_text(text, parse_mode=ParseMode.HTML)
@@ -606,17 +678,19 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
 
+        bin_info = await asyncio.to_thread(lookup_bin, cc)
+        bin_display = format_bin_info(bin_info)
         status, result = await asyncio.to_thread(check_cc, cc, mm, yy, cvv, proxy)
 
         if status == "LIVE":
             emoji, header = "✅", "APPROVED"
-            logger.info(f"✅ LIVE | {fullcc} | {result}")
+            logger.info(f"✅ LIVE | {fullcc} | {result} | {bin_display}")
         elif status == "DEAD":
             emoji, header = "❌", "DECLINED"
-            logger.info(f"❌ DEAD | {fullcc} | {result}")
+            logger.info(f"❌ DEAD | {fullcc} | {result} | {bin_display}")
         else:
             emoji, header = "⚠️", "ERROR"
-            logger.warning(f"⚠️ ERROR | {fullcc} | {result}")
+            logger.warning(f"⚠️ ERROR | {fullcc} | {result} | {bin_display}")
 
         reply = (
             f"{emoji} <b>{header}</b>\n\n"
@@ -624,7 +698,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"├ Status: <b>{status}</b>\n"
             f"├ Response: <code>{result}</code>\n"
             f"├ Gate: <code>Stripe [peerchange.org]</code>\n"
-            f"└ Amount: <code>$1 USD</code>"
+            f"├ Amount: <code>$1 USD</code>\n"
+            f"└ BIN: <code>{bin_display}</code>"
         )
         await msg.edit_text(reply, parse_mode=ParseMode.HTML)
     else:
@@ -758,6 +833,10 @@ async def process_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE, cc_li
         cc, mm, yy, cvv = parts
         fullcc = f"{cc}|{mm}|{yy}|{cvv}"
 
+        # BIN lookup
+        bin_info = await asyncio.to_thread(lookup_bin, cc)
+        bin_display = format_bin_info(bin_info)
+
         # Random proxy rotation — each attempt uses a different proxy
         proxy = proxy_manager.get_random()
         proxy_url_display = "Direct" if not proxy else re.sub(r"://([^:]+):([^@]+)@", r"://***:***@", list(proxy.values())[0])
@@ -765,23 +844,25 @@ async def process_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE, cc_li
 
         if status == "LIVE":
             live_list.append((line, result))
-            logger.info(f"✅ LIVE  | [{i}/{total}] {fullcc} | {result} | proxy: {proxy_url_display}")
+            logger.info(f"✅ LIVE  | [{i}/{total}] {fullcc} | {result} | {bin_display} | proxy: {proxy_url_display}")
             # Send live CC immediately
             await update.message.reply_text(
                 f"✅ <b>LIVE FOUND!</b>\n\n"
                 f"├ CC: <code>{fullcc}</code>\n"
                 f"├ Response: <code>{result}</code>\n"
                 f"├ Gate: <code>Stripe [peerchange.org]</code>\n"
+                f"├ Amount: <code>$1 USD</code>\n"
+                f"├ BIN: <code>{bin_display}</code>\n"
                 f"├ Proxy: <code>{proxy_url_display}</code>\n"
                 f"└ [{i}/{total}]",
                 parse_mode=ParseMode.HTML,
             )
         elif status == "DEAD":
             dead_list.append((line, result))
-            logger.info(f"❌ DEAD  | [{i}/{total}] {fullcc} | {result} | proxy: {proxy_url_display}")
+            logger.info(f"❌ DEAD  | [{i}/{total}] {fullcc} | {result} | {bin_display} | proxy: {proxy_url_display}")
         else:
             error_count += 1
-            logger.warning(f"⚠️ ERROR | [{i}/{total}] {fullcc} | {result} | proxy: {proxy_url_display}")
+            logger.warning(f"⚠️ ERROR | [{i}/{total}] {fullcc} | {result} | {bin_display} | proxy: {proxy_url_display}")
 
         # Update progress setiap 5 CC atau di akhir (rate limit Telegram edit)
         now = asyncio.get_event_loop().time()
